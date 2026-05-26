@@ -1,0 +1,18 @@
+[app]
+name = "code-completion"
+version = "0.1.0"
+description = "Code completion server with model management UI and OpenAI-compatible API"
+
+[runtime.container]
+image = "Dockerfile"
+port = 8080
+
+[routing]
+health_check = "/health"
+
+[resources]
+memory_mb = 20480
+cpu_millicores = 14000
+
+[data]
+app_data = true
