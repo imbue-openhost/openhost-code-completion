@@ -201,7 +201,7 @@ def download_model(repo, filename):
 def search_huggingface(query):
     """Search HuggingFace for GGUF models."""
     try:
-        url = f"https://huggingface.co/api/models?search={query}&filter=gguf&sort=downloads&direction=-1&limit=20"
+        url = f"https://huggingface.co/api/models?search={quote(query)}&filter=gguf&sort=downloads&direction=-1&limit=20"
         req = urllib.request.Request(url, headers={"User-Agent": "openhost-code-completion/0.1"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
