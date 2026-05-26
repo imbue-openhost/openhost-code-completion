@@ -460,8 +460,9 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"status": status}).encode())
             return
 
-        # Proxy /v1/* to llama-server
-        if parsed.path.startswith("/v1/"):
+        # Proxy /v1/* and native llama.cpp endpoints to llama-server
+        llama_proxy_prefixes = ("/v1/", "/infill", "/completions", "/tokenize", "/detokenize", "/embedding", "/slots")
+        if any(parsed.path.startswith(p) or parsed.path == p for p in llama_proxy_prefixes):
             if not is_llama_running():
                 self.send_response(503)
                 self.send_header("Content-Type", "application/json")
@@ -536,8 +537,9 @@ class Handler(BaseHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length) if content_length > 0 else b""
 
-        # Proxy /v1/* to llama-server
-        if parsed.path.startswith("/v1/"):
+        # Proxy /v1/* and native llama.cpp endpoints to llama-server
+        llama_proxy_prefixes = ("/v1/", "/infill", "/completions", "/tokenize", "/detokenize", "/embedding", "/slots")
+        if any(parsed.path.startswith(p) or parsed.path == p for p in llama_proxy_prefixes):
             if not is_llama_running():
                 self.send_response(503)
                 self.send_header("Content-Type", "application/json")
