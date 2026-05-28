@@ -27,10 +27,19 @@ export CTX_SIZE="${LLM_CTX_SIZE:-16384}"
 # Number of slots for concurrent requests
 export N_SLOTS="${LLM_SLOTS:-8}"
 
+# Auto-detect GPU: offload all layers if nvidia-smi is available
+if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
+    export GPU_LAYERS="${LLM_GPU_LAYERS:-99}"
+    echo "GPU detected, offloading ${GPU_LAYERS} layers"
+else
+    export GPU_LAYERS="${LLM_GPU_LAYERS:-0}"
+fi
+
 echo "Starting code-completion server..."
 echo "  Models dir: ${MODELS_DIR}"
 echo "  Threads: ${N_THREADS}"
 echo "  Context: ${CTX_SIZE}"
 echo "  Slots: ${N_SLOTS}"
+echo "  GPU layers: ${GPU_LAYERS}"
 
 exec python3 /app/server.py

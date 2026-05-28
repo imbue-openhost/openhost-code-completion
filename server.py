@@ -27,6 +27,7 @@ STATE_FILE = Path(os.environ.get("STATE_FILE", "/data/app_data/code-completion/s
 N_THREADS = os.environ.get("N_THREADS", "4")
 CTX_SIZE = os.environ.get("CTX_SIZE", "4096")
 N_SLOTS = os.environ.get("N_SLOTS", "2")
+GPU_LAYERS = os.environ.get("GPU_LAYERS", "0")
 
 LLAMA_PORT = 8081
 LLAMA_HOST = "127.0.0.1"
@@ -102,6 +103,7 @@ def start_llama(model_file):
             "--threads", N_THREADS,
             "--ctx-size", CTX_SIZE,
             "--parallel", N_SLOTS,
+            "-ngl", GPU_LAYERS,
         ]
         print(f"Starting llama-server: {' '.join(cmd)}", flush=True)
         llama_process = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr)
