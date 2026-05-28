@@ -25,7 +25,7 @@ export N_THREADS
 export CTX_SIZE="${LLM_CTX_SIZE:-4096}"
 
 # Number of slots for concurrent requests
-export N_SLOTS="${LLM_SLOTS:-8}"
+export N_SLOTS="${LLM_SLOTS:-16}"
 
 echo "Starting code-completion server..."
 echo "  Models dir: ${MODELS_DIR}"
