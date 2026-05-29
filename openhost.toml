@@ -11,8 +11,8 @@ port = 8080
 health_check = "/health"
 
 [resources]
-memory_mb = 28000
-cpu_millicores = 14000
+memory_mb = 4096
+cpu_millicores = 4000
 
 [data]
 app_data = true
