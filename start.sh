@@ -22,7 +22,7 @@ fi
 export N_THREADS
 
 # Context size
-export CTX_SIZE="${LLM_CTX_SIZE:-16384}"
+export CTX_SIZE="${LLM_CTX_SIZE:-8192}"
 
 # Number of slots for concurrent requests
 export N_SLOTS="${LLM_SLOTS:-8}"

@@ -104,6 +104,7 @@ def start_llama(model_file):
             "--ctx-size", CTX_SIZE,
             "--parallel", N_SLOTS,
             "-ngl", GPU_LAYERS,
+            "--flash-attn",
         ]
         print(f"Starting llama-server: {' '.join(cmd)}", flush=True)
         llama_process = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr)
