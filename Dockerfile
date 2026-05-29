@@ -1,3 +1,4 @@
+ARG CUDA_AVAILABLE=false
 ARG UBUNTU_VERSION=24.04
 
 # Build llama.cpp from source
@@ -12,8 +13,7 @@ WORKDIR /build
 
 RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git .
 
-# Build with CPU backend variants only (CUDA is handled at runtime via
-# the host GPU passthrough -- the CUDA runtime libs come from the host).
+# Build with CPU backend variants for broad hardware support
 RUN cmake -S . -B build \
         -DCMAKE_BUILD_TYPE=Release \
         -DGGML_NATIVE=OFF \
