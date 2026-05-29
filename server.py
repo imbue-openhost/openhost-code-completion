@@ -41,6 +41,12 @@ llama_lock = threading.Lock()
 downloads = {}  # model_file -> {progress, status, error}
 download_lock = threading.Lock()
 
+# Metrics: ring buffer of recent requests
+MAX_METRICS = 1000
+metrics_lock = threading.Lock()
+request_metrics: list[dict] = []  # [{timestamp, latency, tokens, status, path}]
+server_start_time = time.time()
+
 
 # --- State management ---
 
@@ -155,6 +161,94 @@ def is_llama_running():
 
 
 # --- Downloads ---
+
+def record_metric(latency, tokens, status, path):
+    with metrics_lock:
+        request_metrics.append({
+            "ts": time.time(),
+            "latency": round(latency, 3),
+            "tokens": tokens,
+            "status": status,
+            "path": path,
+        })
+        # Trim to ring buffer size
+        if len(request_metrics) > MAX_METRICS:
+            del request_metrics[:len(request_metrics) - MAX_METRICS]
+
+
+def get_metrics_summary():
+    now = time.time()
+    with metrics_lock:
+        all_reqs = list(request_metrics)
+
+    if not all_reqs:
+        return {"total_requests": 0, "uptime_s": int(now - server_start_time)}
+
+    # Time windows
+    last_1m = [r for r in all_reqs if now - r["ts"] < 60]
+    last_5m = [r for r in all_reqs if now - r["ts"] < 300]
+    last_1h = [r for r in all_reqs if now - r["ts"] < 3600]
+
+    def stats(reqs):
+        if not reqs:
+            return {"count": 0, "rps": 0, "p50": 0, "p90": 0, "mean": 0, "avg_tokens": 0, "errors": 0}
+        lats = sorted(r["latency"] for r in reqs)
+        toks = [r["tokens"] for r in reqs]
+        errs = sum(1 for r in reqs if r["status"] != 200)
+        span = max(reqs[-1]["ts"] - reqs[0]["ts"], 1)
+        return {
+            "count": len(reqs),
+            "rps": round(len(reqs) / span, 2),
+            "p50": round(lats[len(lats) // 2], 3),
+            "p90": round(lats[int(len(lats) * 0.9)], 3),
+            "mean": round(sum(lats) / len(lats), 3),
+            "avg_tokens": round(sum(toks) / len(toks), 1) if toks else 0,
+            "errors": errs,
+        }
+
+    # Latency histogram for last 5 minutes (buckets)
+    buckets = [0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 30.0]
+    hist = [0] * (len(buckets) + 1)
+    for r in last_5m:
+        placed = False
+        for i, b in enumerate(buckets):
+            if r["latency"] <= b:
+                hist[i] += 1
+                placed = True
+                break
+        if not placed:
+            hist[-1] += 1
+
+    # Requests per minute for the last hour (60 buckets)
+    rpm_buckets = [0] * 60
+    for r in last_1h:
+        age_min = int((now - r["ts"]) / 60)
+        if 0 <= age_min < 60:
+            rpm_buckets[59 - age_min] += 1
+
+    # Latency over time (last 5 min, 30 buckets of 10s each)
+    lat_over_time = []
+    for i in range(30):
+        t_start = now - (30 - i) * 10
+        t_end = t_start + 10
+        bucket_reqs = [r for r in last_5m if t_start <= r["ts"] < t_end]
+        if bucket_reqs:
+            lats = [r["latency"] for r in bucket_reqs]
+            lat_over_time.append({"p50": round(sorted(lats)[len(lats) // 2], 3), "count": len(bucket_reqs)})
+        else:
+            lat_over_time.append({"p50": 0, "count": 0})
+
+    return {
+        "total_requests": len(all_reqs),
+        "uptime_s": int(now - server_start_time),
+        "last_1m": stats(last_1m),
+        "last_5m": stats(last_5m),
+        "last_1h": stats(last_1h),
+        "latency_hist": {"buckets": [f"<={b}s" for b in buckets] + [f">{buckets[-1]}s"], "counts": hist},
+        "rpm": rpm_buckets,
+        "lat_over_time": lat_over_time,
+    }
+
 
 def download_model(repo, filename):
     key = filename
@@ -417,6 +511,7 @@ def render_page(models, active_model, download_status, search_results=None,
 <body>
 <div class="container">
     <h1>Code Completion</h1>
+    <div style="margin-bottom:12px;font-size:0.9em"><a href="/">Models</a> &nbsp; <a href="/dashboard">Dashboard</a></div>
 
     <div class="status-bar">
         <div><span class="label">Server</span><br><span class="badge {status_class}">{llama_status}</span></div>
@@ -483,6 +578,153 @@ POST /v1/chat/completions</pre>
 </html>"""
 
 
+def render_dashboard():
+    m = get_metrics_summary()
+    uptime_h = m["uptime_s"] // 3600
+    uptime_m = (m["uptime_s"] % 3600) // 60
+
+    active = get_active_model() or "none"
+    running = is_llama_running()
+
+    # SVG bar chart helper
+    def bar_chart(values, labels, width=500, height=120, color="#58a6ff"):
+        if not values or max(values) == 0:
+            return f'<svg width="{width}" height="{height}"><text x="10" y="60" fill="#8b949e">No data</text></svg>'
+        max_val = max(values)
+        n = len(values)
+        bar_w = max((width - 40) // n - 1, 2)
+        bars = ""
+        for i, v in enumerate(values):
+            h = int((v / max_val) * (height - 30)) if max_val > 0 else 0
+            x = 30 + i * (bar_w + 1)
+            y = height - 20 - h
+            bars += f'<rect x="{x}" y="{y}" width="{bar_w}" height="{h}" fill="{color}" rx="1"/>'
+        # Y axis labels
+        bars += f'<text x="0" y="15" fill="#8b949e" font-size="10">{max_val}</text>'
+        bars += f'<text x="0" y="{height - 20}" fill="#8b949e" font-size="10">0</text>'
+        # X axis labels (first, middle, last)
+        if labels:
+            bars += f'<text x="30" y="{height - 4}" fill="#8b949e" font-size="9">{labels[0]}</text>'
+            if len(labels) > 1:
+                bars += f'<text x="{width - 40}" y="{height - 4}" fill="#8b949e" font-size="9" text-anchor="end">{labels[-1]}</text>'
+        return f'<svg width="{width}" height="{height}" style="display:block">{bars}</svg>'
+
+    # RPM chart (last hour, per minute)
+    rpm = m.get("rpm", [])
+    rpm_labels = ["-60m", "now"]
+    rpm_chart = bar_chart(rpm, rpm_labels, width=600, height=100, color="#238636")
+
+    # Latency over time (last 5 min, 10s buckets)
+    lot = m.get("lat_over_time", [])
+    lot_vals = [x["p50"] * 1000 for x in lot]  # ms
+    lot_labels = ["-5m", "now"]
+    lot_chart = bar_chart(lot_vals, lot_labels, width=600, height=100, color="#d29922")
+
+    # Latency histogram
+    hist = m.get("latency_hist", {})
+    hist_vals = hist.get("counts", [])
+    hist_labels = hist.get("buckets", [])
+    hist_chart = bar_chart(hist_vals, [hist_labels[0] if hist_labels else "", hist_labels[-1] if hist_labels else ""], width=600, height=100, color="#58a6ff")
+
+    def stat_card(label, value, sub=""):
+        sub_html = f'<div style="color:var(--text-dim);font-size:0.8em">{sub}</div>' if sub else ""
+        return f'<div class="stat-card"><div class="stat-label">{label}</div><div class="stat-value">{value}</div>{sub_html}</div>'
+
+    s1m = m.get("last_1m", {})
+    s5m = m.get("last_5m", {})
+    s1h = m.get("last_1h", {})
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Dashboard - Code Completion</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="refresh" content="5">
+    <style>
+        :root {{ --bg: #0d1117; --surface: #161b22; --border: #21262d; --text: #c9d1d9;
+                 --text-dim: #8b949e; --blue: #58a6ff; --green: #238636; }}
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+               background: var(--bg); color: var(--text); line-height: 1.6; }}
+        .container {{ max-width: 960px; margin: 0 auto; padding: 24px 20px; }}
+        h1 {{ color: var(--blue); font-size: 1.4em; margin-bottom: 4px; }}
+        h2 {{ color: var(--text); font-size: 1.05em; margin: 20px 0 8px;
+              border-bottom: 1px solid var(--border); padding-bottom: 4px; }}
+        a {{ color: var(--blue); text-decoration: none; }}
+        .nav {{ margin-bottom: 16px; font-size: 0.9em; }}
+        .nav a {{ margin-right: 16px; }}
+        .stat-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin: 10px 0; }}
+        .stat-card {{ background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }}
+        .stat-label {{ color: var(--text-dim); font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.05em; }}
+        .stat-value {{ font-size: 1.4em; font-weight: 700; margin-top: 2px; }}
+        .chart-box {{ background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin: 10px 0; overflow-x: auto; }}
+        .chart-title {{ color: var(--text-dim); font-size: 0.8em; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; }}
+        .badge {{ display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }}
+        .badge.active {{ background: var(--green); color: #fff; }}
+        .badge.stopped {{ background: var(--border); color: var(--text-dim); }}
+        code {{ font-size: 0.85em; }}
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Dashboard</h1>
+    <div class="nav"><a href="/">Models</a> <a href="/dashboard">Dashboard</a></div>
+
+    <div class="stat-grid">
+        {stat_card("Status", f'<span class="badge {"active" if running else "stopped"}">{"running" if running else "stopped"}</span>')}
+        {stat_card("Model", f'<code>{html.escape(active)}</code>')}
+        {stat_card("Uptime", f'{uptime_h}h {uptime_m}m')}
+        {stat_card("Total Requests", str(m["total_requests"]))}
+    </div>
+
+    <h2>Last 1 Minute</h2>
+    <div class="stat-grid">
+        {stat_card("Requests", str(s1m.get("count", 0)))}
+        {stat_card("RPS", str(s1m.get("rps", 0)))}
+        {stat_card("p50 Latency", f'{s1m.get("p50", 0):.3f}s')}
+        {stat_card("p90 Latency", f'{s1m.get("p90", 0):.3f}s')}
+        {stat_card("Mean Latency", f'{s1m.get("mean", 0):.3f}s')}
+        {stat_card("Avg Tokens", str(s1m.get("avg_tokens", 0)))}
+        {stat_card("Errors", str(s1m.get("errors", 0)))}
+    </div>
+
+    <h2>Last 5 Minutes</h2>
+    <div class="stat-grid">
+        {stat_card("Requests", str(s5m.get("count", 0)))}
+        {stat_card("RPS", str(s5m.get("rps", 0)))}
+        {stat_card("p50 Latency", f'{s5m.get("p50", 0):.3f}s')}
+        {stat_card("p90 Latency", f'{s5m.get("p90", 0):.3f}s')}
+        {stat_card("Errors", str(s5m.get("errors", 0)))}
+    </div>
+
+    <h2>Last Hour</h2>
+    <div class="stat-grid">
+        {stat_card("Requests", str(s1h.get("count", 0)))}
+        {stat_card("p50 Latency", f'{s1h.get("p50", 0):.3f}s')}
+        {stat_card("p90 Latency", f'{s1h.get("p90", 0):.3f}s')}
+        {stat_card("Errors", str(s1h.get("errors", 0)))}
+    </div>
+
+    <div class="chart-box">
+        <div class="chart-title">Requests per Minute (last hour)</div>
+        {rpm_chart}
+    </div>
+
+    <div class="chart-box">
+        <div class="chart-title">p50 Latency (ms) over last 5 minutes (10s buckets)</div>
+        {lot_chart}
+    </div>
+
+    <div class="chart-box">
+        <div class="chart-title">Latency Distribution (last 5 minutes)</div>
+        {hist_chart}
+    </div>
+</div>
+</body>
+</html>"""
+
+
 # --- HTTP Handler ---
 
 class Handler(BaseHTTPRequestHandler):
@@ -500,6 +742,14 @@ class Handler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/models":
             self._json(200, {"models": list_models(), "active_model": get_active_model(), "downloads": dict(downloads)})
+            return
+
+        if parsed.path == "/api/metrics":
+            self._json(200, get_metrics_summary())
+            return
+
+        if parsed.path == "/dashboard":
+            self._html(200, render_dashboard())
             return
 
         if parsed.path == "/":
@@ -580,7 +830,20 @@ class Handler(BaseHTTPRequestHandler):
             self._json(503, {"error": {"message": "No model loaded.", "type": "server_error"}})
             return
         headers = get_proxy_headers(self)
+        start = time.time()
         status, resp_headers, resp_body = proxy_to_llama(method, path, headers, body)
+        latency = time.time() - start
+
+        # Record metrics for inference endpoints
+        tokens = 0
+        if status == 200 and path in ("/infill", "/completions") or path.startswith("/v1/"):
+            try:
+                data = json.loads(resp_body)
+                tokens = data.get("tokens_predicted", 0) or data.get("usage", {}).get("completion_tokens", 0)
+            except Exception:
+                pass
+            record_metric(latency, tokens, status, path)
+
         self.send_response(status)
         for k, v in resp_headers.items():
             if k.lower() not in ("transfer-encoding", "connection"):
