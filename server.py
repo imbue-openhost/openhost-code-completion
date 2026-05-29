@@ -110,8 +110,10 @@ def start_llama(model_file):
             "--ctx-size", CTX_SIZE,
             "--parallel", N_SLOTS,
             "-ngl", GPU_LAYERS,
-            "--flash-attn", "on",
         ]
+        # Only enable flash attention when using GPU
+        if int(GPU_LAYERS) > 0:
+            cmd.extend(["--flash-attn", "on"])
         print(f"Starting llama-server: {' '.join(cmd)}", flush=True)
         llama_process = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr)
         set_active_model(model_file)
