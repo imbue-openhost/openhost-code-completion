@@ -13,7 +13,6 @@ health_check = "/health"
 [resources]
 memory_mb = 28000
 cpu_millicores = 14000
-gpu = true
 
 [data]
 app_data = true
