@@ -22,10 +22,10 @@ fi
 export N_THREADS
 
 # Context size
-export CTX_SIZE="${LLM_CTX_SIZE:-8192}"
+export CTX_SIZE="${LLM_CTX_SIZE:-4096}"
 
 # Number of slots for concurrent requests
-export N_SLOTS="${LLM_SLOTS:-4}"
+export N_SLOTS="${LLM_SLOTS:-2}"
 
 # Auto-detect GPU: offload all layers if nvidia-smi is available
 if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
