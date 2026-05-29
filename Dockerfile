@@ -1,8 +1,7 @@
 ARG UBUNTU_VERSION=24.04
-ARG CUDA_VERSION=12.9.0
 
-# Build llama.cpp with both CPU and CUDA backends
-FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION} AS build
+# Build llama.cpp from source for optimal CPU performance
+FROM ubuntu:${UBUNTU_VERSION} AS build
 
 RUN apt-get update && \
     apt-get install -y gcc-14 g++-14 build-essential git cmake libssl-dev
@@ -13,21 +12,20 @@ WORKDIR /build
 
 RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git .
 
-# Build with CPU backend variants and CUDA
+# Build with CPU backend variants for broad hardware support
 RUN cmake -S . -B build \
         -DCMAKE_BUILD_TYPE=Release \
         -DGGML_NATIVE=OFF \
         -DLLAMA_BUILD_TESTS=OFF \
         -DGGML_BACKEND_DL=ON \
-        -DGGML_CPU_ALL_VARIANTS=ON \
-        -DGGML_CUDA=ON && \
+        -DGGML_CPU_ALL_VARIANTS=ON && \
     cmake --build build -j $(nproc)
 
 RUN mkdir -p /build/lib && \
     find build -name "*.so*" -exec cp -P {} /build/lib \;
 
-# Runtime image with CUDA runtime libraries
-FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION}
+# Runtime image
+FROM ubuntu:${UBUNTU_VERSION}
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
