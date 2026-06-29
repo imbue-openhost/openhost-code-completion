@@ -42,6 +42,41 @@ GPU_LAYERS = os.environ.get("GPU_LAYERS", "0")
 LLAMA_PORT = 8081
 LLAMA_HOST = "127.0.0.1"
 
+# Recommended fill-in-the-middle (FIM) models for code completion. These are
+# the base Qwen2.5-Coder GGUFs published by ggml-org that llama.cpp/llama.vim
+# recommend for the /infill endpoint. Ordered smallest to largest so users can
+# pick a size class that fits their instance's RAM (and GPU, if any).
+SUGGESTED_MODELS = [
+    {
+        "size_class": "Tiny",
+        "repo": "ggml-org/Qwen2.5-Coder-0.5B-Q8_0-GGUF",
+        "filename": "qwen2.5-coder-0.5b-q8_0.gguf",
+        "size_gb": 0.5,
+        "note": "Fastest, lowest quality. Fits any instance.",
+    },
+    {
+        "size_class": "Small",
+        "repo": "ggml-org/Qwen2.5-Coder-1.5B-Q8_0-GGUF",
+        "filename": "qwen2.5-coder-1.5b-q8_0.gguf",
+        "size_gb": 1.6,
+        "note": "Recommended default for a 4 GB CPU instance.",
+    },
+    {
+        "size_class": "Medium",
+        "repo": "ggml-org/Qwen2.5-Coder-3B-Q8_0-GGUF",
+        "filename": "qwen2.5-coder-3b-q8_0.gguf",
+        "size_gb": 3.3,
+        "note": "Better quality. Needs ~6 GB RAM.",
+    },
+    {
+        "size_class": "Large",
+        "repo": "ggml-org/Qwen2.5-Coder-7B-Q8_0-GGUF",
+        "filename": "qwen2.5-coder-7b-q8_0.gguf",
+        "size_gb": 8.1,
+        "note": "Best quality. Needs ~10 GB RAM or a GPU.",
+    },
+]
+
 # Paths to proxy directly to llama-server
 LLAMA_PROXY_PREFIXES = ("/v1/", "/infill", "/completions", "/tokenize", "/detokenize", "/embedding", "/slots")
 
@@ -528,6 +563,40 @@ def render_page(models, active_model, download_status, api_token, base_url="",
     display_url = base_url or "https://code-completion.<zone>"
     esc_url = html.escape(display_url)
 
+    # Suggested models (size classes). Show a one-click download per row, or an
+    # indicator if the file is already present / downloading.
+    have_files = {m["filename"] for m in models}
+    suggested_rows = ""
+    for s in SUGGESTED_MODELS:
+        fname = s["filename"]
+        dl = download_status.get(fname)
+        if fname in have_files:
+            action = '<span class="badge complete">downloaded</span>'
+        elif dl and dl.get("status") == "downloading":
+            action = '<span class="badge downloading">downloading</span>'
+        else:
+            action = f'''<form method="POST" action="/models/download" style="display:inline">
+                <input type="hidden" name="repo" value="{html.escape(s["repo"])}">
+                <input type="hidden" name="filename" value="{html.escape(fname)}">
+                <button type="submit" class="btn btn-sm btn-primary">Download</button>
+            </form>'''
+        suggested_rows += (
+            f'<tr><td><span class="badge size-class">{html.escape(s["size_class"])}</span></td>'
+            f'<td class="model-name">{html.escape(fname)}</td>'
+            f'<td>{s["size_gb"]} GB</td>'
+            f'<td class="hint" style="margin:0">{html.escape(s["note"])}</td>'
+            f'<td class="actions">{action}</td></tr>'
+        )
+    suggested_html = (
+        '<h2>Suggested Models</h2>'
+        '<div class="section">'
+        '<p class="hint" style="margin-bottom:8px">Qwen2.5-Coder base models with '
+        'fill-in-the-middle support, recommended for the <code>/infill</code> endpoint. '
+        'Pick a size that fits your instance\'s RAM.</p>'
+        '<table><tr><th>Class</th><th>Model</th><th>Size</th><th>Notes</th><th></th></tr>'
+        + suggested_rows + '</table></div>'
+    )
+
     # API token section
     token_html = f"""
     <h2>API Token</h2>
@@ -597,6 +666,7 @@ def render_page(models, active_model, download_status, api_token, base_url="",
         .badge.downloading {{ background: #1f6feb; color: #fff; }}
         .badge.complete {{ background: var(--green); color: #fff; }}
         .badge.failed {{ background: var(--red); color: #fff; }}
+        .badge.size-class {{ background: #1f6feb; color: #fff; }}
         input[type="text"] {{ background: var(--bg); border: 1px solid var(--border); color: var(--text);
                               padding: 7px 12px; border-radius: 6px; font-size: 14px; width: 100%; }}
         input[type="text"]:focus {{ outline: none; border-color: var(--blue); }}
@@ -645,6 +715,8 @@ def render_page(models, active_model, download_status, api_token, base_url="",
     </div>
 
     {"<h2>Downloads</h2><div class='section'><table><tr><th>File</th><th>Status</th><th></th></tr>" + download_rows + "</table></div>" if download_rows else ""}
+
+    {suggested_html}
 
     <h2>Get Models</h2>
     <div class="section">
