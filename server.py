@@ -22,7 +22,9 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
-MODELS_DIR = Path(os.environ.get("MODELS_DIR", "/data/app_data/code-completion/models"))
+# Model weights default to temp/scratch storage (excluded from backups);
+# small persistent state stays in app_data. start.sh sets these explicitly.
+MODELS_DIR = Path(os.environ.get("MODELS_DIR", "/data/app_temp_data/code-completion/models"))
 STATE_FILE = Path(os.environ.get("STATE_FILE", "/data/app_data/code-completion/state.json"))
 N_THREADS = os.environ.get("N_THREADS", "4")
 CTX_SIZE = os.environ.get("CTX_SIZE", "4096")
