@@ -9,6 +9,10 @@ port = 8080
 
 [routing]
 health_check = "/health"
+# The inference endpoints bypass OpenHost owner auth so editors/tools can reach
+# them directly. They are instead gated by an app-generated API token (shown in
+# the app UI). The management UI stays owner-gated by the router.
+public_paths = ["/v1", "/infill", "/completions", "/tokenize", "/detokenize", "/embedding"]
 
 [resources]
 memory_mb = 4096

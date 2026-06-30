@@ -7,10 +7,12 @@ Manages llama.cpp server as a subprocess and provides:
 - Proxies /v1/* and native llama.cpp endpoints to the llama.cpp server
 """
 
+import hmac
 import html
 import http.client
 import json
 import os
+import secrets
 import signal
 import subprocess
 import sys
@@ -52,6 +54,9 @@ server_start_time = time.time()
 
 # --- State management ---
 
+state_lock = threading.RLock()
+
+
 def load_state():
     try:
         with open(STATE_FILE) as f:
@@ -73,9 +78,69 @@ def get_active_model():
 
 
 def set_active_model(model_file):
-    state = load_state()
-    state["active_model"] = model_file
-    save_state(state)
+    with state_lock:
+        state = load_state()
+        state["active_model"] = model_file
+        save_state(state)
+
+
+# --- API token management ---
+#
+# The inference endpoints are exposed publicly (see public_paths in
+# openhost.toml) so editors/tools can reach them without an OpenHost login.
+# They are gated by a token generated and owned by this app (not the OpenHost
+# API token). The owner, browsing through the router, bypasses the token check
+# via the trusted X-OpenHost-Is-Owner header.
+
+def get_api_token():
+    """Return the app's API token, generating and persisting one on first use."""
+    with state_lock:
+        state = load_state()
+        token = state.get("api_token")
+        if not token:
+            token = secrets.token_urlsafe(32)
+            state["api_token"] = token
+            save_state(state)
+        return token
+
+
+def regenerate_api_token():
+    with state_lock:
+        state = load_state()
+        token = secrets.token_urlsafe(32)
+        state["api_token"] = token
+        save_state(state)
+        return token
+
+
+def extract_request_token(handler):
+    """Pull a bearer/api-key token out of the request headers."""
+    auth = handler.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    api_key = handler.headers.get("X-API-Key", "")
+    if api_key:
+        return api_key.strip()
+    return None
+
+
+def is_owner_request(handler):
+    """The router sets X-OpenHost-Is-Owner: true for authenticated owner requests.
+
+    Inbound X-OpenHost-* headers are stripped by the router, so this cannot be
+    forged by external clients.
+    """
+    return handler.headers.get("X-OpenHost-Is-Owner", "").lower() == "true"
+
+
+def is_authorized_inference(handler):
+    """Authorize a request to a public inference endpoint."""
+    if is_owner_request(handler):
+        return True
+    presented = extract_request_token(handler)
+    if not presented:
+        return False
+    return hmac.compare_digest(presented, get_api_token())
 
 
 # --- Model management ---
@@ -368,7 +433,7 @@ def validate_filename(filename):
 
 # --- HTML rendering ---
 
-def render_page(models, active_model, download_status, search_results=None,
+def render_page(models, active_model, download_status, api_token, search_results=None,
                 repo_files=None, selected_repo=None, message=None, error=None):
     running = is_llama_running()
     llama_status = "running" if running else "stopped"
@@ -434,6 +499,24 @@ def render_page(models, active_model, download_status, search_results=None,
         msg_html = f'<div class="alert success">{html.escape(message)}</div>'
     if error:
         msg_html = f'<div class="alert error">{html.escape(error)}</div>'
+
+    # API token section
+    token_html = f"""
+    <h2>API Token</h2>
+    <div class="section">
+        <p class="hint" style="margin-bottom:8px">Send this token as
+        <code>Authorization: Bearer &lt;token&gt;</code> when calling the inference
+        endpoints. Keep it secret &mdash; anyone with it can use this server.</p>
+        <div class="form-row">
+            <input type="text" id="api-token" value="{html.escape(api_token)}" readonly
+                   onclick="this.select()">
+            <button type="button" class="btn" onclick="copyToken()">Copy</button>
+            <form method="POST" action="/token/regenerate" style="display:inline"
+                  onsubmit="return confirm('Regenerate the token? Existing clients will stop working until updated.')">
+                <button type="submit" class="btn btn-warn">Regenerate</button>
+            </form>
+        </div>
+    </div>"""
 
     # Auto-refresh if downloads are active
     has_active_downloads = any(d["status"] == "downloading" for d in download_status.values())
@@ -526,6 +609,8 @@ def render_page(models, active_model, download_status, search_results=None,
 
     {msg_html}
 
+    {token_html}
+
     <h2>Models</h2>
     <div class="section">
     {"<table><tr><th>Model</th><th>Size</th><th></th></tr>" + model_rows + "</table>" if models else '<p class="empty">No models downloaded yet. Search HuggingFace below to get started.</p>'}
@@ -563,14 +648,14 @@ def render_page(models, active_model, download_status, search_results=None,
             <h3>Neovim (llama.vim)</h3>
             <pre>vim.g.llama_config = {{
   endpoint_fim = "https://code-completion.&lt;zone&gt;/infill",
-  api_key = "&lt;token&gt;",
+  api_key = "{html.escape(api_token)}",
   n_predict = 128,
   t_max_predict_ms = 5000,
 }}</pre>
             <h3>VSCodium (llama-vscode)</h3>
             <pre>{{
   "llama.endpoint": "https://code-completion.&lt;zone&gt;",
-  "llama.api_key": "&lt;token&gt;"
+  "llama.api_key": "{html.escape(api_token)}"
 }}</pre>
             <h3>OpenAI-compatible API</h3>
             <pre>POST /v1/completions
@@ -578,6 +663,13 @@ POST /v1/chat/completions</pre>
         </div>
     </details>
 </div>
+<script>
+function copyToken() {{
+    var el = document.getElementById('api-token');
+    el.select();
+    navigator.clipboard.writeText(el.value);
+}}
+</script>
 </body>
 </html>"""
 
@@ -762,7 +854,8 @@ class Handler(BaseHTTPRequestHandler):
             selected_repo = params.get("browse", [None])[0]
             body = render_page(
                 models=list_models(), active_model=get_active_model() or "",
-                download_status=dict(downloads), search_results=search_results,
+                download_status=dict(downloads), api_token=get_api_token(),
+                search_results=search_results,
                 repo_files=repo_files, selected_repo=selected_repo,
                 message=params.get("msg", [None])[0], error=params.get("err", [None])[0],
             )
@@ -824,12 +917,24 @@ class Handler(BaseHTTPRequestHandler):
                 clear_download(filename)
             return self._redirect_msg("Cleared.")
 
+        if parsed.path == "/token/regenerate":
+            regenerate_api_token()
+            return self._redirect_msg("API token regenerated.")
+
         self.send_response(404)
         self.end_headers()
 
     # --- Helpers ---
 
     def _proxy_or_503(self, method, path, body=None):
+        if not is_authorized_inference(self):
+            self._json(401, {"error": {
+                "message": "Missing or invalid API token. Provide it as "
+                           "'Authorization: Bearer <token>'.",
+                "type": "invalid_request_error",
+                "code": "invalid_api_key",
+            }})
+            return
         if not is_llama_running():
             self._json(503, {"error": {"message": "No model loaded.", "type": "server_error"}})
             return
