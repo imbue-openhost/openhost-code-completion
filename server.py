@@ -28,6 +28,12 @@ from urllib.parse import parse_qs, quote, urlparse
 # small persistent state stays in app_data. start.sh sets these explicitly.
 MODELS_DIR = Path(os.environ.get("MODELS_DIR", "/data/app_temp_data/code-completion/models"))
 STATE_FILE = Path(os.environ.get("STATE_FILE", "/data/app_data/code-completion/state.json"))
+# OpenHost injects the app's subdomain label and zone domain; together they
+# form the public URL the app is served at, e.g.
+# https://code-completion.user.host.imbue.com
+OPENHOST_APP_NAME = os.environ.get("OPENHOST_APP_NAME", "")
+OPENHOST_ZONE_DOMAIN = os.environ.get("OPENHOST_ZONE_DOMAIN", "")
+
 N_THREADS = os.environ.get("N_THREADS", "4")
 CTX_SIZE = os.environ.get("CTX_SIZE", "4096")
 N_SLOTS = os.environ.get("N_SLOTS", "2")
@@ -122,6 +128,23 @@ def extract_request_token(handler):
     if api_key:
         return api_key.strip()
     return None
+
+
+def get_base_url(handler=None):
+    """Best-effort public base URL the app is served at (no trailing slash).
+
+    Prefers the router-supplied X-Forwarded-Host/Proto on the current request,
+    then falls back to OPENHOST_APP_NAME + OPENHOST_ZONE_DOMAIN. Returns an
+    empty string if the host can't be determined (local dev without env vars).
+    """
+    if handler is not None:
+        host = handler.headers.get("X-Forwarded-Host", "")
+        if host:
+            proto = handler.headers.get("X-Forwarded-Proto", "https")
+            return f"{proto}://{host}"
+    if OPENHOST_APP_NAME and OPENHOST_ZONE_DOMAIN:
+        return f"https://{OPENHOST_APP_NAME}.{OPENHOST_ZONE_DOMAIN}"
+    return ""
 
 
 def is_owner_request(handler):
@@ -433,7 +456,8 @@ def validate_filename(filename):
 
 # --- HTML rendering ---
 
-def render_page(models, active_model, download_status, api_token, search_results=None,
+def render_page(models, active_model, download_status, api_token, base_url="",
+                search_results=None,
                 repo_files=None, selected_repo=None, message=None, error=None):
     running = is_llama_running()
     llama_status = "running" if running else "stopped"
@@ -499,6 +523,10 @@ def render_page(models, active_model, download_status, api_token, search_results
         msg_html = f'<div class="alert success">{html.escape(message)}</div>'
     if error:
         msg_html = f'<div class="alert error">{html.escape(error)}</div>'
+
+    # Public base URL for setup snippets; fall back to a placeholder if unknown.
+    display_url = base_url or "https://code-completion.<zone>"
+    esc_url = html.escape(display_url)
 
     # API token section
     token_html = f"""
@@ -647,19 +675,24 @@ def render_page(models, active_model, download_status, api_token, search_results
         <div class="section" style="margin-top:8px">
             <h3>Neovim (llama.vim)</h3>
             <pre>vim.g.llama_config = {{
-  endpoint_fim = "https://code-completion.&lt;zone&gt;/infill",
+  endpoint_fim = "{esc_url}/infill",
   api_key = "{html.escape(api_token)}",
   n_predict = 128,
   t_max_predict_ms = 5000,
 }}</pre>
             <h3>VSCodium (llama-vscode)</h3>
             <pre>{{
-  "llama.endpoint": "https://code-completion.&lt;zone&gt;",
+  "llama.endpoint": "{esc_url}",
   "llama.api_key": "{html.escape(api_token)}"
 }}</pre>
             <h3>OpenAI-compatible API</h3>
-            <pre>POST /v1/completions
-POST /v1/chat/completions</pre>
+            <pre>curl {esc_url}/v1/completions \\
+  -H "Authorization: Bearer {html.escape(api_token)}" \\
+  -H "Content-Type: application/json" \\
+  -d '{{"prompt": "def fib(n):", "n_predict": 64}}'
+
+POST {esc_url}/v1/completions
+POST {esc_url}/v1/chat/completions</pre>
         </div>
     </details>
 </div>
@@ -855,6 +888,7 @@ class Handler(BaseHTTPRequestHandler):
             body = render_page(
                 models=list_models(), active_model=get_active_model() or "",
                 download_status=dict(downloads), api_token=get_api_token(),
+                base_url=get_base_url(self),
                 search_results=search_results,
                 repo_files=repo_files, selected_repo=selected_repo,
                 message=params.get("msg", [None])[0], error=params.get("err", [None])[0],
