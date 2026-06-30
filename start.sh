@@ -2,9 +2,13 @@
 set -euo pipefail
 
 DATA_DIR="${OPENHOST_APP_DATA_DIR:-/data/app_data/code-completion}"
-MODELS_DIR="${DATA_DIR}/models"
+# Model weights live in temp/scratch storage so they are excluded from backups.
+# Falls back to app_data when OPENHOST_APP_TEMP_DIR is unavailable (e.g. local dev).
+TEMP_DIR="${OPENHOST_APP_TEMP_DIR:-$DATA_DIR}"
+MODELS_DIR="${TEMP_DIR}/models"
 STATE_FILE="${DATA_DIR}/state.json"
 mkdir -p "$MODELS_DIR"
+mkdir -p "$(dirname "$STATE_FILE")"
 
 # Initialize state file if it doesn't exist
 if [ ! -f "$STATE_FILE" ]; then

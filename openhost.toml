@@ -15,4 +15,8 @@ memory_mb = 4096
 cpu_millicores = 4000
 
 [data]
+# Small persistent state (which model is active). Backed up.
 app_data = true
+# Downloaded GGUF model weights live here: local scratch, recreatable on
+# demand and excluded from backups so they don't bloat backup size.
+app_temp_data = true
