@@ -16,7 +16,7 @@ public_paths = ["/v1", "/infill", "/completions", "/tokenize", "/detokenize", "/
 
 [resources]
 memory_mb = 4096
-cpu_millicores = 4000
+cpu_cores = 4.0
 
 [data]
 # Small persistent state (which model is active). Backed up.
